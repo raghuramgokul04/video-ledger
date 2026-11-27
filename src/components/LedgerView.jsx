@@ -50,6 +50,33 @@ function fmtWeek(start) {
   return `${fmtDate(toDateStr(s))} – ${fmtDate(toDateStr(e))}`
 }
 
+/* ─── Collapsible group section (top-level so its collapsed state survives re-renders) ─── */
+function GroupSection({ title, badge, items, renderRow }) {
+  const [collapsed, setCollapsed] = useState(false)
+  return (
+    <div className="vl-card mb-3">
+      <button onClick={() => setCollapsed(v => !v)}
+        className="w-full flex items-center justify-between cursor-pointer group mb-1">
+        <div className="flex items-center gap-2.5">
+          <span className="font-semibold text-vl-text text-sm group-hover:text-vl-green transition-colors">{title}</span>
+          <span className="px-2 py-0.5 rounded-full bg-vl-elevated border border-vl-border text-vl-muted text-[11px] font-mono">
+            {items.length}
+          </span>
+          {badge && <span className="text-[11px] text-vl-subtle">{badge}</span>}
+        </div>
+        <span className="text-vl-subtle group-hover:text-vl-text2 transition-colors p-1">
+          {collapsed ? <ChevronDown size={15}/> : <ChevronUp size={15}/>}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="mt-2 -mx-1">
+          {items.map(renderRow)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ─── Component ───────────────────────────────────────────── */
 export default function LedgerView({ profileId, profile, isOwner, currentUser }) {
   const [videos, setVideos]           = useState([])
@@ -73,15 +100,18 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
   const [delId, setDelId]             = useState(null)
 
   /* ── Fetch ── */
+  const [loadErr, setLoadErr]         = useState('')
+
   const fetchVideos = useCallback(async () => {
     if (!profileId) return
     setLoading(true)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('videos')
       .select('*')
       .eq('user_id', profileId)
       .order('editing_date', { ascending: false })
       .order('created_at', { ascending: false })
+    setLoadErr(error ? 'Could not load entries: ' + error.message : '')
     setVideos(data || [])
     setLoading(false)
   }, [profileId])
@@ -133,6 +163,7 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
     const nums = vidNums.split(',').map(s => s.trim()).filter(Boolean)
     if (!nums.length) { setAddMsg({ type:'error', text:'Enter at least one video number.' }); return }
     if (addDate > today)  { setAddMsg({ type:'error', text:'Future dates are not allowed.' }); return }
+    if (!currentUser)     { setAddMsg({ type:'error', text:'Please sign in again.' }); return }
     setAddLoading(true)
     const rows = nums.map(n => ({
       user_id: currentUser.id,
@@ -166,23 +197,32 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
     if (editForm.editing_date > today)  { setEditErr('Future dates not allowed.'); return }
     setEditSaving(true)
     const { error } = await supabase.from('videos')
-      .update({ ...editForm, notes: editForm.notes.trim().slice(0,140)||null, updated_at: new Date().toISOString() })
+      .update({
+        video_number: editForm.video_number.trim(),
+        editing_date: editForm.editing_date,
+        status: editForm.status,
+        notes: editForm.notes.trim().slice(0,140) || null,
+      })
       .eq('id', id).eq('user_id', currentUser.id)
     if (error) { setEditErr(error.message) } else { setEditId(null); await fetchVideos() }
     setEditSaving(false)
   }
 
   async function deleteEntry(id) {
-    await supabase.from('videos').delete().eq('id', id).eq('user_id', currentUser.id)
+    const { error } = await supabase.from('videos').delete().eq('id', id).eq('user_id', currentUser.id)
+    if (error) { setEditErr(error.message); setAddMsg({ type:'error', text:'Delete failed: ' + error.message }); return }
     setDelId(null)
     if (editId === id) setEditId(null)
     await fetchVideos()
   }
 
-  /* ── Entry row ── */
-  function EntryRow({ v }) {
+  /* ── Entry row ──
+     Plain render function (NOT an inner component): an inner component gets a new
+     identity on every render, so React remounts it and the edit inputs lose focus
+     after each keystroke. */
+  function renderEntryRow(v) {
     if (editId === v.id) return (
-      <div className="vl-card border-vl-green/50 bg-vl-elevated/60 space-y-3.5 mb-2">
+      <div key={v.id} className="vl-card border-vl-green/50 bg-vl-elevated/60 space-y-3.5 mb-2">
         {editErr && <div className="text-xs text-red-400 bg-red-950/30 border border-red-900/50 rounded-lg px-3 py-2">{editErr}</div>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -235,7 +275,7 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
     )
 
     if (delId === v.id) return (
-      <div className="flex items-center justify-between gap-3 p-3.5 mb-2 rounded-xl border border-red-900/70 bg-red-950/20 flex-wrap">
+      <div key={v.id} className="flex items-center justify-between gap-3 p-3.5 mb-2 rounded-xl border border-red-900/70 bg-red-950/20 flex-wrap">
         <p className="text-xs text-red-300">
           Delete <span className="font-mono font-semibold">#{v.video_number}</span>? This cannot be undone.
         </p>
@@ -247,7 +287,7 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
     )
 
     return (
-      <div className="flex items-center gap-3 px-2 py-2.5 rounded-lg hover:bg-vl-elevated transition-colors group">
+      <div key={v.id} className="flex items-center gap-3 px-2 py-2.5 rounded-lg hover:bg-vl-elevated transition-colors group">
         {/* Video # */}
         <button
           onClick={() => isOwner && startEdit(v)}
@@ -279,33 +319,6 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
             className="opacity-0 group-hover:opacity-100 p-1 text-vl-subtle hover:text-vl-green rounded transition-all shrink-0">
             <Edit2 size={13}/>
           </button>
-        )}
-      </div>
-    )
-  }
-
-  /* ── Collapsible group section ── */
-  function GroupSection({ title, badge, items }) {
-    const [collapsed, setCollapsed] = useState(false)
-    return (
-      <div className="vl-card mb-3">
-        <button onClick={() => setCollapsed(v => !v)}
-          className="w-full flex items-center justify-between cursor-pointer group mb-1">
-          <div className="flex items-center gap-2.5">
-            <span className="font-semibold text-vl-text text-sm group-hover:text-vl-green transition-colors">{title}</span>
-            <span className="px-2 py-0.5 rounded-full bg-vl-elevated border border-vl-border text-vl-muted text-[11px] font-mono">
-              {items.length}
-            </span>
-            {badge && <span className="text-[11px] text-vl-subtle">{badge}</span>}
-          </div>
-          <span className="text-vl-subtle group-hover:text-vl-text2 transition-colors p-1">
-            {collapsed ? <ChevronDown size={15}/> : <ChevronUp size={15}/>}
-          </span>
-        </button>
-        {!collapsed && (
-          <div className="mt-2 -mx-1">
-            {items.map(v => <EntryRow key={v.id} v={v} />)}
-          </div>
         )}
       </div>
     )
@@ -464,6 +477,9 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
       </div>
 
       {/* ── Tab content ── */}
+      {loadErr && (
+        <div className="mb-4 text-xs px-3 py-2.5 rounded-xl border bg-red-950/30 border-red-900/60 text-red-300">{loadErr}</div>
+      )}
       {loading ? (
         <div className="text-center py-16 text-vl-muted text-sm">Loading entries…</div>
       ) : filtered.length === 0 ? (
@@ -477,12 +493,12 @@ export default function LedgerView({ profileId, profile, isOwner, currentUser })
         </div>
       ) : (
         <>
-          {activeTab==='day'     && dayGroups.map(([k,items]) => <GroupSection key={k} title={fmtDate(k)} badge={k===today?'Today':''} items={items}/>)}
-          {activeTab==='week'    && weekGroups.map(([k,items]) => <GroupSection key={k} title={fmtWeek(k)} items={items}/>)}
-          {activeTab==='month'   && monthGroups.map(([k,items]) => <GroupSection key={k} title={fmtMonth(k)} items={items}/>)}
+          {activeTab==='day'     && dayGroups.map(([k,items]) => <GroupSection key={k} title={fmtDate(k)} badge={k===today?'Today':''} items={items} renderRow={renderEntryRow}/>)}
+          {activeTab==='week'    && weekGroups.map(([k,items]) => <GroupSection key={k} title={fmtWeek(k)} items={items} renderRow={renderEntryRow}/>)}
+          {activeTab==='month'   && monthGroups.map(([k,items]) => <GroupSection key={k} title={fmtMonth(k)} items={items} renderRow={renderEntryRow}/>)}
           {activeTab==='entries' && (
             <div className="vl-card">
-              {filtered.map(v => <EntryRow key={v.id} v={v}/>)}
+              {filtered.map(renderEntryRow)}
             </div>
           )}
         </>

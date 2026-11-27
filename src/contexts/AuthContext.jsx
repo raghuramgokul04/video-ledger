@@ -19,7 +19,8 @@ export function AuthProvider({ children }) {
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchProfile(session.user.id)
+      // Defer: calling Supabase inside this callback can deadlock supabase-js' auth lock.
+      if (session?.user) setTimeout(() => fetchProfile(session.user.id), 0)
       else {
         setProfile(null)
         setLoading(false)
@@ -36,7 +37,8 @@ export function AuthProvider({ children }) {
         .select('*')
         .eq('id', userId)
         .single()
-      if (!error) setProfile(data)
+      if (error) console.error('Error fetching profile:', error.message)
+      setProfile(error ? null : data)
     } catch (err) {
       console.error('Error fetching profile:', err)
     } finally {

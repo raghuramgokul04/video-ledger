@@ -31,6 +31,12 @@ export default {
         sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
         mono: ['"JetBrains Mono"', '"Fira Code"', 'Menlo', '"Courier New"', 'monospace'],
       },
+      // bg-vl-green/8 and /12 are used across the UI but are not in Tailwind's
+      // default opacity scale, so they generated no CSS at all.
+      opacity: {
+        8: '0.08',
+        12: '0.12',
+      },
       borderRadius: {
         'xl2': '14px',
       },

@@ -15,7 +15,7 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <div className="min-h-screen bg-ledger-bg text-ledger-text">
+        <div className="min-h-screen bg-vl-bg text-vl-text">
           <Navbar />
           <Routes>
             <Route path="/" element={<TeamPage />} />
