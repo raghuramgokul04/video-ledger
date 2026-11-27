@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import { uploadAvatar, removeAllAvatars, validateAvatar } from '../lib/avatar'
 import { Camera, Save, Trash2, AlertCircle, CheckCircle2 } from 'lucide-react'
 import LoadingSpinner from '../components/LoadingSpinner'
 
@@ -26,12 +27,19 @@ export default function MyProfilePage() {
 
   useEffect(() => { if (profile) setFullName(profile.full_name || '') }, [profile])
 
+  // Free the temporary preview URL when it changes or the page closes.
+  useEffect(() => () => { if (avatarPreview) URL.revokeObjectURL(avatarPreview) }, [avatarPreview])
+
   if (loading) return <LoadingSpinner text="Loading profile…"/>
-  if (!user)   { navigate('/login'); return null }
+  if (!user)   return <Navigate to="/login" replace />
 
   function handleAvatarChange(e) {
     const file = e.target.files[0]
+    e.target.value = ''   // allow picking the same file again later
     if (!file) return
+    setError(''); setSuccess('')
+    const fileErr = validateAvatar(file)
+    if (fileErr) { setError(fileErr); return }
     setAvatarFile(file)
     setAvatarPreview(URL.createObjectURL(file))
   }
@@ -42,30 +50,57 @@ export default function MyProfilePage() {
     if (!fullName.trim()) { setError('Name cannot be empty.'); return }
     setSaving(true)
 
-    let avatarUrl = profile?.avatar_url
+    let avatarUrl = profile?.avatar_url ?? null
     if (avatarFile) {
-      const ext  = avatarFile.name.split('.').pop()
-      const path = `${user.id}/avatar.${ext}`
-      const { error: upErr } = await supabase.storage.from('avatars').upload(path, avatarFile, { upsert:true })
-      if (upErr) { setError('Photo upload failed: ' + upErr.message); setSaving(false); return }
-      const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
-      avatarUrl = urlData.publicUrl + '?t=' + Date.now()
+      try {
+        avatarUrl = await uploadAvatar(user.id, avatarFile)
+      } catch (err) {
+        setError('Photo upload failed: ' + err.message)
+        setSaving(false)
+        return
+      }
     }
 
+    // upsert so a user whose profile row is missing (e.g. created before the trigger) still gets one
     const { error: updateErr } = await supabase.from('profiles')
-      .update({ full_name: fullName.trim(), avatar_url: avatarUrl, updated_at: new Date().toISOString() })
-      .eq('id', user.id)
+      .upsert({ id: user.id, full_name: fullName.trim(), avatar_url: avatarUrl })
 
     if (updateErr) { setError(updateErr.message) }
     else { await refreshProfile(); setSuccess('Profile updated.'); setAvatarFile(null); setAvatarPreview(null) }
     setSaving(false)
   }
 
+  async function handleRemovePhoto() {
+    setError(''); setSuccess('')
+    setSaving(true)
+    try {
+      await removeAllAvatars(user.id)
+      const { error: updErr } = await supabase.from('profiles').update({ avatar_url: null }).eq('id', user.id)
+      if (updErr) throw updErr
+      await refreshProfile()
+      setAvatarFile(null); setAvatarPreview(null)
+      setSuccess('Photo removed.')
+    } catch (err) {
+      setError('Could not remove photo: ' + err.message)
+    }
+    setSaving(false)
+  }
+
   async function handleDelete() {
     if (deleteInput !== 'DELETE') { setError('Type DELETE exactly to confirm.'); return }
+    setError('')
     setDeleting(true)
-    await supabase.from('videos').delete().eq('user_id', user.id)
-    await supabase.from('profiles').delete().eq('id', user.id)
+    try {
+      // Storage files are not removed by the database cascade, so delete them first.
+      await removeAllAvatars(user.id)
+      // Deletes the auth user; profiles + videos go with it (ON DELETE CASCADE).
+      const { error: rpcErr } = await supabase.rpc('delete_my_account')
+      if (rpcErr) throw rpcErr
+    } catch (err) {
+      setError('Account deletion failed: ' + err.message)
+      setDeleting(false)
+      return
+    }
     await supabase.auth.signOut()
     navigate('/')
   }
@@ -101,12 +136,18 @@ export default function MyProfilePage() {
               <Camera size={14} strokeWidth={2.5}/>
             </button>
           </div>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange}/>
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={handleAvatarChange}/>
           <p className="text-xs text-vl-muted">
             {avatarFile
               ? <span className="text-vl-green font-medium">📎 {avatarFile.name}</span>
-              : 'Click the camera icon to change your photo'}
+              : 'Click the camera icon to change your photo (max 2 MB)'}
           </p>
+          {profile?.avatar_url && !avatarFile && (
+            <button type="button" onClick={handleRemovePhoto} disabled={saving}
+              className="text-[11px] text-vl-muted hover:text-red-400 transition-colors cursor-pointer disabled:opacity-50">
+              Remove photo
+            </button>
+          )}
         </div>
 
         {/* Feedback */}

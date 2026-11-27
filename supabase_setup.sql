@@ -150,19 +150,26 @@ CREATE POLICY "Users can delete own videos"
   USING (auth.uid() = user_id);
 
 -- ─── 8. STORAGE CONFIGURATION FOR AVATARS BUCKET ─────────────
--- Create avatars bucket if not exists
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('avatars', 'avatars', true)
-ON CONFLICT (id) DO NOTHING;
+-- Create the avatars bucket, or FIX it if it already exists
+-- (e.g. it was created by hand in the dashboard as a private bucket,
+--  which makes every public avatar URL fail to load).
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('avatars', 'avatars', true, 2097152,
+        ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+ON CONFLICT (id) DO UPDATE
+SET public             = true,
+    file_size_limit    = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
 
--- Storage policies:
--- 1. Anyone can view avatars
+-- Storage policies (each DROP uses the SAME name as its CREATE,
+-- so this script can be run again without "policy already exists" errors).
+-- 1. Anyone can view / list avatars
 DROP POLICY IF EXISTS "Avatar images are publicly accessible" ON storage.objects;
 CREATE POLICY "Avatar images are publicly accessible"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'avatars');
 
--- 2. Authenticated users can upload their own avatar
+-- 2. Authenticated users can upload into their own folder: avatars/<user id>/...
 DROP POLICY IF EXISTS "Users can upload their own avatar" ON storage.objects;
 CREATE POLICY "Users can upload their own avatar"
   ON storage.objects FOR INSERT
@@ -174,17 +181,23 @@ CREATE POLICY "Users can upload their own avatar"
 
 -- 3. Authenticated users can update their own avatar
 DROP POLICY IF EXISTS "Users can update their own avatar" ON storage.objects;
-CREATE POLICY "Users can update own avatar"
+DROP POLICY IF EXISTS "Users can update own avatar" ON storage.objects;
+CREATE POLICY "Users can update their own avatar"
   ON storage.objects FOR UPDATE
   TO authenticated
   USING (
+    bucket_id = 'avatars' AND
+    (storage.foldername(name))[1] = auth.uid()::text
+  )
+  WITH CHECK (
     bucket_id = 'avatars' AND
     (storage.foldername(name))[1] = auth.uid()::text
   );
 
 -- 4. Authenticated users can delete their own avatar
 DROP POLICY IF EXISTS "Users can delete their own avatar" ON storage.objects;
-CREATE POLICY "Users can delete own avatar"
+DROP POLICY IF EXISTS "Users can delete own avatar" ON storage.objects;
+CREATE POLICY "Users can delete their own avatar"
   ON storage.objects FOR DELETE
   TO authenticated
   USING (
@@ -192,3 +205,32 @@ CREATE POLICY "Users can delete own avatar"
     (storage.foldername(name))[1] = auth.uid()::text
   );
 
+-- ─── 9. SELF-SERVICE ACCOUNT DELETION ────────────────────────
+-- The browser cannot delete its own auth.users row, so "Delete my account"
+-- used to leave the login alive. This function deletes the CALLER's auth user;
+-- profiles and videos are removed by ON DELETE CASCADE.
+-- (Avatar files are removed by the app through the Storage API first.)
+CREATE OR REPLACE FUNCTION public.delete_my_account()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+  DELETE FROM auth.users WHERE id = auth.uid();
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.delete_my_account() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.delete_my_account() TO authenticated;
+
+-- ─── 10. BACKFILL MISSING PROFILES ───────────────────────────
+-- Users who signed up before the trigger existed have no profile row.
+INSERT INTO public.profiles (id, full_name)
+SELECT u.id, COALESCE(u.raw_user_meta_data->>'full_name', split_part(u.email, '@', 1))
+FROM auth.users u
+LEFT JOIN public.profiles p ON p.id = u.id
+WHERE p.id IS NULL;

@@ -168,3 +168,17 @@ Test the application against all key requirements:
 
 Your Video Ledger application is now live and fully operational!
 
+
+
+---
+
+## Troubleshooting: profile photos / Storage
+
+- **Photos don't show / Storage looks empty:** re-run the whole `supabase_setup.sql` (it is safe to run again).
+  It makes the `avatars` bucket public, sets a 2 MB / image-only limit, and fixes the storage policies.
+- **Photo chosen at sign-up never appears:** with **Confirm email** turned on there is no logged-in session
+  right after sign-up, and Storage only accepts uploads from a logged-in user. Sign in, then add the photo
+  from **My Profile**.
+- Files are stored as `avatars/<user id>/avatar-<timestamp>.<ext>`. In the dashboard open
+  **Storage → avatars** and then the user's folder to see them.
+- **Delete my account** needs the `delete_my_account()` function from section 9 of the SQL script.

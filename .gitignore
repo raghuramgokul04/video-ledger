@@ -5,3 +5,14 @@ dist
 .env.*.local
 *.log
 .DS_Store
+
+# Personal / secret AI-tool files
+.env.*
+!.env.example
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/*.local.*
+.claude/worktrees/
+.mcp.json
+.cursor/
+.windsurf/

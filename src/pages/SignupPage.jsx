@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { uploadAvatar, validateAvatar } from '../lib/avatar'
 import { UserPlus, AlertCircle, CheckCircle2, Upload } from 'lucide-react'
 
 export default function SignupPage() {
@@ -12,6 +13,8 @@ export default function SignupPage() {
   const [loading, setLoading]                 = useState(false)
   const [error, setError]                     = useState('')
   const [success, setSuccess]                 = useState(false)
+  const [needsConfirm, setNeedsConfirm]       = useState(true)
+  const [notice, setNotice]                   = useState('')
 
   async function handleSignup(e) {
     e.preventDefault()
@@ -19,28 +22,44 @@ export default function SignupPage() {
     if (!fullName.trim())            { setError('Full name is required.'); return }
     if (password !== confirmPassword) { setError('Passwords do not match.'); return }
     if (password.length < 6)          { setError('Password must be at least 6 characters.'); return }
+    const fileErr = validateAvatar(avatarFile)
+    if (fileErr)                      { setError(fileErr); return }
 
     setLoading(true)
     const { data, error: signupErr } = await supabase.auth.signUp({
       email, password,
-      options: { data: { full_name: fullName.trim() } },
+      options: {
+        data: { full_name: fullName.trim() },
+        emailRedirectTo: `${window.location.origin}/login`,
+      },
     })
     if (signupErr) { setError(signupErr.message); setLoading(false); return }
 
-    const userId = data.user?.id
-    if (userId) {
-      let avatarUrl = null
-      if (avatarFile) {
-        const ext  = avatarFile.name.split('.').pop()
-        const path = `${userId}/avatar.${ext}`
-        const { error: upErr } = await supabase.storage.from('avatars').upload(path, avatarFile, { upsert:true })
-        if (!upErr) {
-          const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
-          avatarUrl = urlData.publicUrl
-        }
-      }
-      await supabase.from('profiles').upsert({ id:userId, full_name:fullName.trim(), avatar_url:avatarUrl, updated_at:new Date().toISOString() })
+    // Supabase hides "email already registered" by returning a user with no identities.
+    if (data.user && data.user.identities?.length === 0) {
+      setError('An account with this email already exists. Try signing in or resetting your password.')
+      setLoading(false)
+      return
     }
+
+    // The profile row is created by the on_auth_user_created trigger.
+    // Storage uploads need a logged-in session. When "Confirm email" is ON there is
+    // no session yet, so the photo has to be added from My Profile after signing in.
+    if (data.session && data.user && avatarFile) {
+      try {
+        const avatarUrl = await uploadAvatar(data.user.id, avatarFile)
+        const { error: profErr } = await supabase.from('profiles')
+          .update({ avatar_url: avatarUrl })
+          .eq('id', data.user.id)
+        if (profErr) throw profErr
+      } catch (err) {
+        setNotice('Account created, but the photo could not be uploaded: ' + err.message + '. You can add it from My Profile.')
+      }
+    } else if (avatarFile) {
+      setNotice('After you confirm your email and sign in, add your photo from My Profile.')
+    }
+
+    setNeedsConfirm(!data.session)
     setSuccess(true)
     setLoading(false)
   }
@@ -52,11 +71,23 @@ export default function SignupPage() {
           <div className="w-14 h-14 rounded-2xl bg-vl-green/12 border border-vl-green/25 flex items-center justify-center text-vl-green mx-auto mb-4">
             <CheckCircle2 size={28}/>
           </div>
-          <h2 className="text-xl font-bold text-vl-text mb-2">Check your inbox</h2>
-          <p className="text-sm text-vl-muted mb-1.5">We sent a confirmation link to</p>
-          <p className="text-sm font-semibold text-vl-green font-mono mb-6 break-all">{email}</p>
-          <p className="text-xs text-vl-muted mb-7 leading-relaxed">Click the link in that email to activate your account, then return here to sign in.</p>
-          <Link to="/login" className="vl-btn-primary w-full py-2.5 justify-center">Go to Sign In</Link>
+          {needsConfirm ? (
+            <>
+              <h2 className="text-xl font-bold text-vl-text mb-2">Check your inbox</h2>
+              <p className="text-sm text-vl-muted mb-1.5">We sent a confirmation link to</p>
+              <p className="text-sm font-semibold text-vl-green font-mono mb-6 break-all">{email}</p>
+              <p className="text-xs text-vl-muted mb-4 leading-relaxed">Click the link in that email to activate your account, then return here to sign in.</p>
+            </>
+          ) : (
+            <>
+              <h2 className="text-xl font-bold text-vl-text mb-2">Account created</h2>
+              <p className="text-sm text-vl-muted mb-4">You are signed in and ready to go.</p>
+            </>
+          )}
+          {notice && <p className="text-xs text-amber-300 mb-6 leading-relaxed">{notice}</p>}
+          {needsConfirm
+            ? <Link to="/login" className="vl-btn-primary w-full py-2.5 justify-center">Go to Sign In</Link>
+            : <Link to="/my-ledger" className="vl-btn-primary w-full py-2.5 justify-center">Go to My Ledger</Link>}
         </div>
       </div>
     </div>
@@ -112,9 +143,9 @@ export default function SignupPage() {
               <label className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-dashed border-vl-border bg-vl-elevated hover:border-vl-border2 cursor-pointer transition-colors group">
                 <Upload size={15} className="text-vl-subtle group-hover:text-vl-green transition-colors shrink-0"/>
                 <span className="text-xs text-vl-muted group-hover:text-vl-text2 truncate">
-                  {avatarFile ? avatarFile.name : 'Click to upload photo'}
+                  {avatarFile ? avatarFile.name : 'Click to upload photo (max 2 MB)'}
                 </span>
-                <input type="file" accept="image/*" className="hidden" onChange={e => setAvatarFile(e.target.files[0])}/>
+                <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={e => setAvatarFile(e.target.files[0])}/>
               </label>
             </div>
 
