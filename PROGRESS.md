@@ -18,4 +18,4 @@
 
 ## Done log
 
-- 2026-11-27 — Tasks 1–8 on branch `fix/storage-and-bugs` (see commit history).
+- 2026-11-27 — Tasks 1–5: `7ff66b8`; tasks 6–8: `e55c5f3`; CI + docs: `aeef941` (branch `fix/storage-and-bugs`).
